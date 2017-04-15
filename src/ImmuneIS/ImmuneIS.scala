@@ -302,13 +302,13 @@ object ImmuneIS {
 
     val size = SuppressorSet.size
     //  val Indexes
-   /// val indicesToBeRemoved = new ListBuffer[Int]
-   val indicesToBeRemoved = HashSet.empty[Int]
+    /// val indicesToBeRemoved = new ListBuffer[Int]
+    val indicesToBeRemoved = HashSet.empty[Int]
 
 
     var fitnessSuppressor = new Array[Int](size)
 
-//    var time = System.nanoTime
+    //    var time = System.nanoTime
 
     var latitudeVector = new  Array[Double](size)
     var longitudeVector = new  Array[Double](size)
@@ -321,58 +321,50 @@ object ImmuneIS {
 
     for (i <- 0 until size) {
 
-     // if(i%1000 == 0) println ((System.nanoTime - time)/ 1e9)
+      // if(i%1000 == 0) println ((System.nanoTime - time)/ 1e9)
 
+      var fitness = 0
 
+      if(!indicesToBeRemoved.contains(i)) {
+        for (j <- (i + 1) until size) {
 
-        var fitness = 0
-
-        for( j<-i+1 until size){
-
-          if(!indicesToBeRemoved.contains(j)) { // I only go ahead if this instance hasn't been marked to be removed.   // TODO: Check with Grazziela
+          if (!indicesToBeRemoved.contains(j)) {
+            // I only go ahead if this instance hasn't been marked to be removed.
             // IF LOCATION AND WEEKDAY MAKE SENSE.. WE CONTINUE.. OTHERWISE.. WE DON'T EVEN COMPARE:
             if (SuppressorSet(i)(INDEX_PARTIAL_LOCATION).equalsIgnoreCase(SuppressorSet(j)(INDEX_PARTIAL_LOCATION))) {
+              //     if (SuppressorSet(i)(INDEX_WEEKDAY).equalsIgnoreCase(SuppressorSet(j)(INDEX_WEEKDAY))) {
 
+              // I'M GOING TO IGNORE THE TIME FOR NOW.
 
-             // if (SuppressorSet(i)(INDEX_WEEKDAY).equalsIgnoreCase(SuppressorSet(j)(INDEX_WEEKDAY))) {
+              // val miles = Haversine.haversine(SuppressorSet(i)(INDEX_LATITUDE).toDouble, SuppressorSet(i)(INDEX_LONGITUDE).toDouble, SuppressorSet(j)(INDEX_LATITUDE).toDouble, SuppressorSet(j)(INDEX_LONGITUDE).toDouble)
+              val miles = Haversine.haversine(latitudeVector(i), longitudeVector(i), latitudeVector(j), longitudeVector(j))
 
-                // I'M GOING TO IGNORE THE TIME FOR NOW.
+              if (miles <= MILEAGE) {
+                val bearing_diff = scala.math.abs(SuppressorSet(i)(INDEX_BEARING).toInt - SuppressorSet(j)(INDEX_BEARING).toInt)
+                val module = (bearing_diff + 180) % 360 - 180
+                val delta = scala.math.abs(module)
 
-               // val miles = Haversine.haversine(SuppressorSet(i)(INDEX_LATITUDE).toDouble, SuppressorSet(i)(INDEX_LONGITUDE).toDouble, SuppressorSet(j)(INDEX_LATITUDE).toDouble, SuppressorSet(j)(INDEX_LONGITUDE).toDouble)
-               val miles = Haversine.haversine(latitudeVector(i), longitudeVector(i), latitudeVector(j), longitudeVector(j))
-
-            /*  if(SuppressorSet(i)(INDEX_PARTIAL_LOCATION).equalsIgnoreCase("Brian Clough Way")){
-                println("Here it's a match")
-                println(SuppressorSet(i).mkString(" ")+ "\t" + SuppressorSet(j).mkString(" ") + "\t miles: "+miles)
-              }*/
-
-                if (miles <= MILEAGE) {
-                  val bearing_diff = scala.math.abs(SuppressorSet(i)(INDEX_BEARING).toInt - SuppressorSet(j)(INDEX_BEARING).toInt)
-                  val module = (bearing_diff + 180) % 360 - 180
-                  val delta = scala.math.abs(module)
-
-                  // println("delta: " + delta)
-                  if (delta < 60) {
-                    indicesToBeRemoved += j
-                    fitness += 1;
-                  }
+                // println("delta: " + delta)
+                if (delta < 60) {
+                  indicesToBeRemoved += j
+                  fitness += 1;
                 }
+              }
 
-             // }
+              //   }
             }
           }
 
-        }  // End for j, to check pair with Cell_i
+        } // End for j, to check pair with Cell_i
 
-
-        fitnessSuppressor(i) = fitness
-     }
-   // System.exit(1)
+      }
+      fitnessSuppressor(i) = fitness
+    }
 
     println("I will remove a number of redundant suppressors: "+indicesToBeRemoved.size)
 
     (indicesToBeRemoved,fitnessSuppressor)
- }
+  }
 
 
    def distanceHotSpot (instance1: Array[String], instance2: Array[String]): Double = {
@@ -396,7 +388,7 @@ object ImmuneIS {
 
     val (iterator1, iterator2) = iter.duplicate
 
-
+  //  val (iterator3, iterator4) = iterator2.duplicate
 
     var toBeRemoved = new ListBuffer[Boolean]
 
@@ -466,21 +458,21 @@ object ImmuneIS {
 
     println("I'm going to eliminate: "+cont + "; out of: "+cont2)
 
-    //println("iterator2 size : "+iterator2.length)
+   // println("iterator2 size : "+iterator2.length)
 
     val filteredSet = iterator2.zipWithIndex.filter{case (key, value) => !toBeRemoved(value.toInt)}
 
     // Create directly the set to be returned from here.
 
   //  println("Filtered Set : "+filteredSet.size)
-    val noRedundantData = HashSet.empty[String]
+    val noRedundantData = ListBuffer.empty[String]
     while(filteredSet.hasNext){
       var guy = filteredSet.next()._1
      // println(guy)
       noRedundantData += guy
     }
 
-   // println("noRedundantData.size: "+noRedundantData.size)
+    // println("noRedundantData.size: "+noRedundantData.size)
 
    /* var suppressedGuys=0
     for(i<-0 until fitnessSuppressor.size) suppressedGuys+= fitnessSuppressor(i)
@@ -589,7 +581,7 @@ object ImmuneIS {
     * Haversine is necessary to compute distance between GPS coordinates.
     */
   object Haversine {
-    val R = 6372.8  //radius in km
+    val R = 6372.8/1.609344  //radius in miles!!
 
     def haversine(lat1:Double, lon1:Double, lat2:Double, lon2:Double)={
       val dLat=(lat2 - lat1).toRadians

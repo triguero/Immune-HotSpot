@@ -60,6 +60,8 @@ object ImmuneISfullyParallel {
 
     val dataRawIndices = sc.textFile(dataFile: String, numPartitions).zipWithIndex().persist()
 
+    val initialSize = dataRawIndices.count()
+
     // Defining the size of the supressor (or reduction set) as a percentage of the original set
 
     val InitialNumHotSpots = dataRawIndices.count() * PercentageInitialPoints / 100
@@ -92,20 +94,44 @@ object ImmuneISfullyParallel {
 
     //println(ListOfRedundancies)
 
+
+    println("fitnessSuppressorSet.size " + fitnessSuppressorSet.size)
+
+
     var suppressedGuys = 0
-    for (i <- 0 until fitnessSuppressorSet.size) suppressedGuys += fitnessSuppressorSet(i)
-    //  print(fitnessSuppressorSet(i)+",")
-    println("I have suppressed this number of guys: " + suppressedGuys)
+    for (i <- 0 until fitnessSuppressorSet.size) {
+      suppressedGuys += fitnessSuppressorSet(i)
+      if(!ListOfRedundancies.contains(i))
+       print(fitnessSuppressorSet(i)+",")
+    }
+    println("\nI have suppressed this number of guys: " + suppressedGuys)
+
+    for (i <- 0 until fitnessSuppressorSet.size) {
+      if(ListOfRedundancies.contains(i))
+        print(fitnessSuppressorSet(i)+",")
+    }
 
     val CleanedSuppresorSet = SuppressorSet.zipWithIndex.filterNot(line => ListOfRedundancies.contains(line._2)).map(line => line._1)
     val CleanedFitnessSuppressorSet = fitnessSuppressorSet.zipWithIndex.filterNot(line => ListOfRedundancies.contains(line._2)).map(line => line._1)
 
-    println("Suppressor Set after cleaning of redundant points: " + CleanedSuppresorSet.size)
+    println("\nSuppressor Set after cleaning of redundant points: " + CleanedSuppresorSet.size)
 
     println("Time to Remove redundant points in the Suppresor set : "+(System.nanoTime - InitialTime)/ 1e9)
 
     val Stage1time = (System.nanoTime - Stage1Initial)/ 1e9
 
+    var sumFitness = 0
+    for(i <- 0 until CleanedFitnessSuppressorSet.size){
+      sumFitness += CleanedFitnessSuppressorSet(i)
+      print(CleanedFitnessSuppressorSet(i)+",")
+    }
+
+    println("\nCleanedFitnessSuppressorSet.size " + CleanedFitnessSuppressorSet.size)
+
+    println("sumFitness: " + sumFitness)
+
+
+   // System.exit(1)
 
     var step3time = System.nanoTime
 
@@ -131,7 +157,8 @@ object ImmuneISfullyParallel {
       suppressedSoFar +=  CleanedFitnessSuppressorSet(i)
     }
 
-    data.unpersist()
+    println("data.count()"+data.count())
+    //data.unpersist()
     result.unpersist()
 
     println("SuppressedSoFar "+ suppressedSoFar)
@@ -152,34 +179,71 @@ object ImmuneISfullyParallel {
     println("Applying Step 5.1")
     var resultStep5 = data.mapPartitions(dataset => CleanEachMap(dataset, mileage)).persist()  // Now in each partition, I have the remaining Cells + their fitness...
 
+
+
+    println("resultStep5.count()"+resultStep5.count())
+
+
     // 2n we compare 1 vs. 2..N, 2 vs 3..N, etc...
 
     println("Applying Step 5.2")
 
     var fitnessStep5 = new ArrayBuffer[Int]
 
-    for (i <- 0 until resultStep5.getNumPartitions) {
+    for (i <- 0 until resultStep5.getNumPartitions) { // we don't enter in the last step!
 
+      var trozo = resultStep5.filterByRange(i, i).collect()(0)
+      var subset = trozo._2._1 // This a partition, I take only the data.. don't need the fitness here.
 
-      var subset = resultStep5.filterByRange(i, i).collect()(0)._2._1 // This a partition, I take only the data.. don't need the fitness here.
+      var fitnessBC = trozo._2._2
 
       val subset_broadcast = sc.broadcast(subset)
 
       println("Subset: "+subset.size)
 
-      var newData = resultStep5.mapPartitionsWithIndex((index, info) => Cleaning(info, subset_broadcast, mileage,i)).persist()
+      var newData =  resultStep5.mapPartitionsWithIndex((index, info) => Cleaning(info, subset_broadcast, mileage, i)).persist()
+
 
       // I now need to aggregate the fitness achieved in every partition for the current subset.
 
       val step5 =  newData.mapPartitions(info => getFitnessFrom3Tuple(info)).collect()
-      var fitness_temp = getFitnessArray(step5)
+      var fitness_temp = getFitnessArray(step5)  // this comes with the gain obtained from removing elments of the other partitions.
 
-      println("fitness size: "+fitness_temp.size)
+      if(fitnessBC.size != fitness_temp.size){
+        println("ERROR fitness iterative")
+        System.exit(-1)
+      }
+
+
+
+      var suppressedMapI = 0
+      for(i<-0 until fitness_temp.size){
+        fitness_temp(i) += fitnessBC(i)
+         suppressedMapI +=  fitness_temp(i)
+      }
+
+      println("fitness size: "+fitness_temp.size + " ; we suppressed in Map "+ i+": " +suppressedMapI)
       fitnessStep5 ++= fitness_temp
 
       resultStep5 = newData.mapPartitions(info => getDataAndFitnessFrom3Tuple(info)).persist()
 
+      println("newData.count() "+newData.count())
+
     }
+
+   /* val fitnessLastMap = resultStep5.filterByRange(resultStep5.getNumPartitions-1, resultStep5.getNumPartitions-1).collect()(0)._2._2  // aggregating fitness from last partition!
+
+    var suppressedMapI = 0
+    for(i<-0 until fitnessLastMap.size){
+      suppressedMapI +=  fitnessLastMap(i)
+    }
+
+    println("suppressedMapI "+suppressedMapI)
+
+    fitnessStep5 ++= fitnessLastMap
+
+*/
+    // think the fitness of the last set is not being taking into account!
 
     var dataToBeCombined = resultStep5.collect()
 
@@ -189,7 +253,7 @@ object ImmuneISfullyParallel {
 
 
     data.unpersist()
-    var outString = new ArrayBuffer[String]
+    var outString = new ListBuffer[String]
 
     for (i<-0 until dataToBeCombined.size){
      // println("2. dataToBeCombined(i)._2 size: " +dataToBeCombined(i)._2.size)
@@ -255,7 +319,9 @@ object ImmuneISfullyParallel {
     }
     //print(outPut)
 
-    println("We have suppressed: "+totalNumberOfSuppressedGuys)
+    val rawHosts = initialSize - totalNumberOfSuppressedGuys
+    println("Initial size: "+initialSize + "; We have suppressed: "+totalNumberOfSuppressedGuys + "  rawHosts should be: "+rawHosts + ", resultingSuppressorSet.size= "+resultingSuppressorSet.size)
+
 
     var pw = new PrintWriter(new File(outputFile))
     pw.write(outPut)
@@ -374,6 +440,11 @@ object ImmuneISfullyParallel {
     // the piece of data of this map that needs reducing
     var mapData = data._2
     var fitnessCurrentPartition = data._2._2
+
+   // var sumFit =0
+    //for(i<-0 until fitnessCurrentPartition.size) sumFit += fitnessCurrentPartition(i)
+//    println("I'm processing partition: "+mapBeingProcess + "; fitness Accumulated from before: "+sumFit)
+
     var MapNumber = data._1
 
     val indicesToBeRemoved = HashSet.empty[Int]
@@ -508,41 +579,43 @@ object ImmuneISfullyParallel {
 
         var fitness = 0
 
-        for( j<-i+1 until size){
+      if(!indicesToBeRemoved.contains(i)) {
+        for (j <- (i + 1) until size) {
 
-          if(!indicesToBeRemoved.contains(j)) { // I only go ahead if this instance hasn't been marked to be removed.   // TODO: Check with Grazziela
+          if (!indicesToBeRemoved.contains(j)) {
+            // I only go ahead if this instance hasn't been marked to be removed.
             // IF LOCATION AND WEEKDAY MAKE SENSE.. WE CONTINUE.. OTHERWISE.. WE DON'T EVEN COMPARE:
             if (SuppressorSet(i)(INDEX_PARTIAL_LOCATION).equalsIgnoreCase(SuppressorSet(j)(INDEX_PARTIAL_LOCATION))) {
-         //     if (SuppressorSet(i)(INDEX_WEEKDAY).equalsIgnoreCase(SuppressorSet(j)(INDEX_WEEKDAY))) {
+              //     if (SuppressorSet(i)(INDEX_WEEKDAY).equalsIgnoreCase(SuppressorSet(j)(INDEX_WEEKDAY))) {
 
-                // I'M GOING TO IGNORE THE TIME FOR NOW.
+              // I'M GOING TO IGNORE THE TIME FOR NOW.
 
-               // val miles = Haversine.haversine(SuppressorSet(i)(INDEX_LATITUDE).toDouble, SuppressorSet(i)(INDEX_LONGITUDE).toDouble, SuppressorSet(j)(INDEX_LATITUDE).toDouble, SuppressorSet(j)(INDEX_LONGITUDE).toDouble)
-               val miles = Haversine.haversine(latitudeVector(i), longitudeVector(i), latitudeVector(j), longitudeVector(j))
+              // val miles = Haversine.haversine(SuppressorSet(i)(INDEX_LATITUDE).toDouble, SuppressorSet(i)(INDEX_LONGITUDE).toDouble, SuppressorSet(j)(INDEX_LATITUDE).toDouble, SuppressorSet(j)(INDEX_LONGITUDE).toDouble)
+              val miles = Haversine.haversine(latitudeVector(i), longitudeVector(i), latitudeVector(j), longitudeVector(j))
 
-                if (miles <= MILEAGE) {
-                  val bearing_diff = scala.math.abs(SuppressorSet(i)(INDEX_BEARING).toInt - SuppressorSet(j)(INDEX_BEARING).toInt)
-                  val module = (bearing_diff + 180) % 360 - 180
-                  val delta = scala.math.abs(module)
+              if (miles <= MILEAGE) {
+                val bearing_diff = scala.math.abs(SuppressorSet(i)(INDEX_BEARING).toInt - SuppressorSet(j)(INDEX_BEARING).toInt)
+                val module = (bearing_diff + 180) % 360 - 180
+                val delta = scala.math.abs(module)
 
-                  // println("delta: " + delta)
-                  if (delta < 60) {
-                    indicesToBeRemoved += j
-                    fitness += 1;
-                  }
+                // println("delta: " + delta)
+                if (delta < 60) {
+                  indicesToBeRemoved += j
+                  fitness += 1;
                 }
+              }
 
-           //   }
+              //   }
             }
           }
 
-        }  // End for j, to check pair with Cell_i
+        } // End for j, to check pair with Cell_i
 
-
+      }
         fitnessSuppressor(i) = fitness
      }
 
-    println("I will remove a number of redundant suppressors: "+indicesToBeRemoved.size)
+    println("I will remove a number of redundant suppressors: "+indicesToBeRemoved.size + " out of "+size)
 
     (indicesToBeRemoved,fitnessSuppressor)
  }
@@ -645,7 +718,7 @@ object ImmuneISfullyParallel {
 
   //  println("Filtered Set : "+filteredSet.size)
    // val noRedundantData = HashSet.empty[Array[String]]
-   val noRedundantData = HashSet.empty[String]
+   val noRedundantData = ListBuffer.empty[String]
     while(filteredSet.hasNext){
       var guy = filteredSet.next()._1
       noRedundantData += guy
@@ -690,7 +763,7 @@ object ImmuneISfullyParallel {
     * Haversine is necessary to compute distance between GPS coordinates.
     */
   object Haversine {
-    val R = 6372.8  //radius in km
+    val R = 6372.8/1.609344  //radius in miles!!
 
     def haversine(lat1:Double, lon1:Double, lat2:Double, lon2:Double)={
       val dLat=(lat2 - lat1).toRadians
